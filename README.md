@@ -1,4 +1,4 @@
-# dna-gel-electrophoresis-band-detector
+# DNA Gel Electrophoresis Band Detector
 
 Small toolkit to detect lanes/bands in gel electrophoresis images and evaluate detections against ROI annotations.
 
