@@ -114,10 +114,12 @@ def process_dataset(extract_dir, extract_dataset_dir, gel_images_dir, extract_go
         print(f"F1-score:  {np.mean(lane_f1_list):.3f}")
 
 
-def load_lane_annotations(roi_dir):
+# python
+def load_lane_annotations(roi_dir, LANE_MIN_HEIGHT=30, MIN_ASPECT_RATIO=1.5):
     """
     Parses ROI lane regions and returns dict[image_name] = list of x-centers.
-    Filters out band ROIs (small height) and keeps lane ROIs (large height).
+    Handles rectangular and polygon ROIs by computing a bounding box.
+    Filters by minimum height and aspect ratio (height/width).
     """
     annotations = {}
     for subdir in sorted(os.listdir(roi_dir)):
@@ -126,37 +128,52 @@ def load_lane_annotations(roi_dir):
             continue
 
         lanes = []
-        roi_files = [f for f in os.listdir(subpath) if f.endswith(".roi")]
+        roi_files = [f for f in os.listdir(subpath) if f.lower().endswith(".roi")]
         if not roi_files:
             print(f"⚠️ No ROI files found in {subdir}")
             continue
 
-        # Debug: track what we're filtering
         all_rois = []
-
         for fname in roi_files:
             roi_path = os.path.join(subpath, fname)
             try:
                 roi = read_roi_file(roi_path)
                 for roi_name, data in roi.items():
-                    # Ensure it's a rectangle
+                    # Try rectangle fields first
                     if all(k in data for k in ("left", "width", "top", "height")):
-                        height = data["height"]
-                        width = data["width"]
-                        all_rois.append((roi_name, width, height))
+                        bbox_w = float(data["width"])
+                        bbox_h = float(data["height"])
+                        left = float(data["left"])
+                        cx = left + bbox_w / 2.0
+                        all_rois.append((roi_name, bbox_w, bbox_h))
+                    else:
+                        # Try polygon/point fields commonly returned (x, y lists)
+                        xs = data.get("x") or data.get("X") or data.get("coords_x")
+                        ys = data.get("y") or data.get("Y") or data.get("coords_y")
+                        if xs and ys and len(xs) == len(ys) and len(xs) > 0:
+                            xs_f = [float(v) for v in xs]
+                            ys_f = [float(v) for v in ys]
+                            x_min, x_max = min(xs_f), max(xs_f)
+                            y_min, y_max = min(ys_f), max(ys_f)
+                            bbox_w = x_max - x_min
+                            bbox_h = y_max - y_min
+                            cx = (x_min + x_max) / 2.0
+                            all_rois.append((roi_name, bbox_w, bbox_h))
+                        else:
+                            # Unknown ROI shape; keep for debugging
+                            all_rois.append((roi_name, None, None))
+                            continue
 
-                        # Lane ROIs should be tall and narrow
-                        # Adjust thresholds based on your actual data
-                        if height > width and height > 40:  # Changed logic
-                            cx = data["left"] + data["width"] / 2
-                            lanes.append(cx)
+                    # Decide if this bbox is a lane: tall enough and sufficiently narrow
+                    aspect = bbox_h / max(1.0, bbox_w)
+                    if bbox_h >= LANE_MIN_HEIGHT and aspect >= MIN_ASPECT_RATIO:
+                        lanes.append(cx)
             except Exception as e:
                 print(f"❌ Error reading ROI {roi_path}: {e}")
 
-        # Debug output for images with 0 lanes
         if len(lanes) == 0 and len(all_rois) > 0:
             print(f"⚠️ {subdir}: Found {len(all_rois)} ROIs but 0 lanes. Sample ROIs:")
-            for name, w, h in all_rois[:3]:
+            for name, w, h in all_rois[:6]:
                 print(f"    - {name}: width={w}, height={h}")
 
         annotations[subdir] = lanes
